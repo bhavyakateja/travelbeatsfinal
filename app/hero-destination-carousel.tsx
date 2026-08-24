@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
 import DepthCarousel from "./depth-carousel";
 
 const destinations = [
@@ -16,40 +16,31 @@ const destinations = [
 ];
 
 export function HeroDestinationCarousel() {
-  const [dimensions, setDimensions] = useState({ width: 480, height: 580 });
-
-  useEffect(() => {
-    const handleResize = () => {
-      if (window.innerWidth <= 480) {
-        // Mobile dimensions
-        setDimensions({ width: 280, height: 350 });
-      } else if (window.innerWidth <= 1024) {
-        // Tablet dimensions
-        setDimensions({ width: 360, height: 440 });
-      } else {
-        // Desktop dimensions (Restored large size)
-        setDimensions({ width: 480, height: 580 });
-      }
-    };
-
-    handleResize();
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
-
-  const carouselItems = destinations.map((destination) => ({
-    image: destination.image,
-    alt: `${destination.name}, ${destination.country}`,
-    name: destination.name,
-    country: destination.country,
-  }));
+  // DepthCarousel already measures its own container with a
+  // ResizeObserver and applies a CSS `scale()` transform to fit
+  // (see updateScale/layout). Driving cardWidth/cardHeight from a
+  // window "resize" listener here was redundant: it re-triggered
+  // DepthCarousel's full relayout effect on every resize tick,
+  // and it made <Image> refetch a different source size at each
+  // breakpoint jump. A single base size + CSS scaling is smoother
+  // and needs zero extra JS or network requests on resize.
+  const carouselItems = useMemo(
+    () =>
+      destinations.map((destination) => ({
+        image: destination.image,
+        alt: `${destination.name}, ${destination.country}`,
+        name: destination.name,
+        country: destination.country,
+      })),
+    []
+  );
 
   return (
     <div className="relative h-full w-full overflow-hidden flex items-center justify-center">
       <DepthCarousel
         items={carouselItems}
-        cardWidth={dimensions.width}
-        cardHeight={dimensions.height}
+        cardWidth={480}
+        cardHeight={580}
         radius={24}
         depth={50}
         spread={22}

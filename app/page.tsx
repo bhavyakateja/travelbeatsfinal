@@ -220,17 +220,12 @@ export default async function Home() {
           {/* Clean Card Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
             {featuredJourneys.map((journey, index) => (
-              <article className="journey-preview-card-wrap relative flex flex-col justify-between p-6 rounded-2xl bg-slate-50 border border-slate-200/80 transition-all duration-300 hover:-translate-y-1 hover:shadow-md hover:border-slate-300" key={journey.id}>
+              <Link
+                key={journey.id}
+                href={`/journeys`}
+                className="journey-preview-card-wrap relative flex flex-col justify-between p-6 rounded-2xl bg-slate-50 border border-slate-200/80 transition-all duration-300 hover:-translate-y-1 hover:shadow-md hover:border-slate-300 group block"
+              >
                 <div>
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="text-xs font-mono font-bold text-slate-400">0{index + 1}</span>
-                    <WishlistButton
-                      itemId={journey.id}
-                      itemType="PACKAGE"
-                      defaultActive={wishlistedPackageIds.has(journey.id)}
-                      label={`Toggle wishlist for ${journey.title}`}
-                    />
-                  </div>
                   <span className="inline-block text-[10px] font-bold uppercase tracking-wider text-[#00A8E8] bg-[#00A8E8]/10 px-2 py-0.5 rounded mb-2">
                     {journey.duration}
                   </span>
@@ -244,11 +239,11 @@ export default async function Home() {
 
                 <div className="pt-4 border-t border-slate-200/60 flex items-center justify-between">
                   <span className="text-[11px] font-medium text-slate-500">{journey.optionsCount}</span>
-                  <Link href={`/journeys#${journey.slug}`} className="inline-flex items-center justify-center text-slate-900 hover:text-amber-600 transition-colors">
+                  <span className="inline-flex items-center justify-center text-slate-900 group-hover:text-amber-600 transition-colors">
                     <ArrowRight size={18} />
-                  </Link>
+                  </span>
                 </div>
-              </article>
+              </Link>
             ))}
           </div>
         </section>

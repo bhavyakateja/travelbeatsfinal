@@ -366,28 +366,37 @@ export function WishlistButton({
   const active = state.message ? state.active : defaultActive;
 
   return (
-    <form action={formAction} className="wishlist-form">
+    <form action={formAction} className="relative inline-flex items-center">
       <input type="hidden" name="itemId" value={itemId} />
       <input type="hidden" name="itemType" value={itemType} />
 
       <button
         type="submit"
-        className={active ? "wishlist-button is-active" : "wishlist-button"}
         disabled={pending}
         aria-label={label}
         aria-pressed={active}
         title={active ? "Remove from wishlist" : "Save to wishlist"}
+        className={`relative inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-amber-500/50 disabled:opacity-50 ${
+          active
+            ? "border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100"
+            : "border-slate-200 bg-white text-slate-600 shadow-2xs hover:bg-slate-50 hover:text-slate-900"
+        }`}
       >
-        <Heart size={16} fill={active ? "currentColor" : "none"} />
+        <Heart size={18} fill={active ? "currentColor" : "none"} />
       </button>
 
+      {/* Floating Toast Notification relative to the button container */}
       {state.message ? (
         <div
-          className={state.ok ? "wishlist-toast" : "wishlist-toast wishlist-toast--error"}
           key={`${state.message}-${state.active}`}
           role="status"
+          className={`absolute top-full right-0 mt-2 z-50 flex items-center gap-2 whitespace-nowrap rounded-xl px-3 py-2 text-xs font-semibold shadow-md transition-all ${
+            state.ok
+              ? "bg-slate-900 text-white"
+              : "bg-rose-600 text-white"
+          }`}
         >
-          {state.ok ? <CheckCircle2 size={19} /> : <CircleAlert size={19} />}
+          {state.ok ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}
           <span>{state.message}</span>
         </div>
       ) : null}

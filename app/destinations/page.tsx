@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import {
@@ -10,17 +11,88 @@ import { getCurrentUser } from "../lib/auth";
 import { getDestinations } from "../lib/content";
 import { getPrisma } from "../lib/db";
 
-export const dynamic = "force-dynamic";
+// Destination content is the same for every visitor and doesn't need
+// to be re-fetched from the DB on every request. `force-dynamic` was
+// forcing a full round trip (destinations + auth + wishlist) before
+// anything could paint, on every single load. ISR lets Next.js cache
+// the rendered destinations content and revalidate it in the
+// background instead of blocking the response on it.
+export const revalidate = 60;
+
+async function DestinationsGrid({
+  destinations,
+}: {
+  destinations: Awaited<ReturnType<typeof getDestinations>>;
+}) {
+  // User + wishlist are personalized and can't be part of the cached
+  // page, but they also don't need to gate the grid. This runs inside
+  // its own Suspense boundary below, so the grid itself streams in
+  // immediately from cache and the hearts fill in right after.
+  const user = await getCurrentUser();
+
+  const wishlistedDestinations = user
+    ? await getPrisma().wishlistItem.findMany({
+        where: {
+          userId: user.id,
+          destinationId: { not: null },
+        },
+        select: {
+          destinationId: true,
+        },
+      })
+    : [];
+
+  const wishlistedDestinationIds = new Set(
+    wishlistedDestinations
+      .map((item) => item.destinationId)
+      .filter(Boolean) as string[]
+  );
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+      {destinations.map((destination, index) => (
+        <DestinationCard
+          destination={destination}
+          index={index}
+          key={destination.id}
+          wishlisted={wishlistedDestinationIds.has(destination.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function DestinationsGridFallback({
+  destinations,
+}: {
+  destinations: Awaited<ReturnType<typeof getDestinations>>;
+}) {
+  // Same grid, rendered instantly with wishlisted=false while the
+  // personalized pass above is still resolving. Avoids a layout shift
+  // / spinner — hearts just "fill in" a moment later for signed-in
+  // users instead of the whole page waiting.
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+      {destinations.map((destination, index) => (
+        <DestinationCard
+          destination={destination}
+          index={index}
+          key={destination.id}
+          wishlisted={false}
+        />
+      ))}
+    </div>
+  );
+}
 
 export default async function Destinations({
   searchParams,
 }: {
   searchParams: Promise<{ category?: string }>;
 }) {
-  const [params, destinations, user] = await Promise.all([
+  const [params, destinations] = await Promise.all([
     searchParams,
     getDestinations(),
-    getCurrentUser(),
   ]);
 
   const selectedCategory = params.category?.trim() || "";
@@ -48,24 +120,6 @@ export default async function Destinations({
         )
       )
     : destinations;
-
-  const wishlistedDestinations = user
-    ? await getPrisma().wishlistItem.findMany({
-        where: {
-          userId: user.id,
-          destinationId: { not: null },
-        },
-        select: {
-          destinationId: true,
-        },
-      })
-    : [];
-
-  const wishlistedDestinationIds = new Set(
-    wishlistedDestinations
-      .map((item) => item.destinationId)
-      .filter(Boolean) as string[]
-  );
 
   return (
     <>
@@ -199,16 +253,17 @@ export default async function Destinations({
 
           {/* DESTINATION CARDS / NO RESULTS */}
           {filteredDestinations.length > 0 ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
-              {filteredDestinations.map((destination, index) => (
-                <DestinationCard
-                  destination={destination}
-                  index={index}
-                  key={destination.id}
-                  wishlisted={wishlistedDestinationIds.has(destination.id)}
-                />
-              ))}
-            </div>
+            <Suspense
+              // Key on category so switching filters doesn't show
+              // stale wishlist state from the previous fallback while
+              // the new personalized pass resolves.
+              key={selectedCategory}
+              fallback={
+                <DestinationsGridFallback destinations={filteredDestinations} />
+              }
+            >
+              <DestinationsGrid destinations={filteredDestinations} />
+            </Suspense>
           ) : (
             <div className="py-20 text-center bg-white rounded-2xl border border-slate-200/80 shadow-xs px-6">
               <h3 className="text-xl font-bold text-slate-900">

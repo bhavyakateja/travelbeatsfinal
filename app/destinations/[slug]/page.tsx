@@ -7,6 +7,7 @@ import { SiteFooter, SiteHeader, TripRequestForm } from "../../components";
 import { getCurrentUser } from "../../lib/auth";
 import { getPrisma } from "../../lib/db";
 import { SwipeableImageCarousel } from "../../swipeable-image-carousel";
+import { WishlistButton } from "../../components"; // Adjust import path if needed
 
 export const revalidate = 300;
 
@@ -51,7 +52,6 @@ export default async function DestinationDetail({
           where: { isPublished: true },
           orderBy: { createdAt: "desc" },
         },
-        // Fetch approved reviews for this destination
         reviews: {
           where: { status: "APPROVED" },
           orderBy: { createdAt: "desc" },
@@ -72,18 +72,26 @@ export default async function DestinationDetail({
     notFound();
   }
 
-  // Hero Image URL
+  // Fetch whether user has this destination favorited (if logged in)
+  let isWishlisted = false;
+  if (user?.id) {
+    const wishlistItem = await prisma.wishlistItem.findFirst({
+      where: {
+        userId: user.id,
+        destinationId: destination.id,
+      },
+    });
+    isWishlisted = !!wishlistItem;
+  }
+
   const heroImage = destination.heroImageUrl || destination.images[0] || "/placeholder.jpg";
-  
-  // Secondary Images for the Swipe Carousel on the Right
-  const carouselImages = destination.images && destination.images.length > 0 
-    ? destination.images 
+  const carouselImages = destination.images && destination.images.length > 0
+    ? destination.images
     : [heroImage];
 
   const bestMonthsText = formatBestMonths(destination.bestMonths);
   const destinationsList = allDestinations.map((d) => d.name);
 
-  // Review status calculations
   const reviewsCount = destination.reviews.length;
   const averageRating = reviewsCount > 0
     ? (destination.reviews.reduce((acc, curr) => acc + curr.rating, 0) / reviewsCount).toFixed(1)
@@ -94,7 +102,7 @@ export default async function DestinationDetail({
       <SiteHeader />
 
       <main className="mx-auto max-w-7xl px-6 pt-28 pb-16 md:px-8 md:pt-32">
-        
+
         {/* Navigation & Place Name Header */}
         <div className="mb-8">
           <Link
@@ -113,9 +121,21 @@ export default async function DestinationDetail({
             </span>
           </div>
 
-          <h1 className="text-4xl font-extrabold tracking-tight text-slate-900 md:text-5xl lg:text-6xl">
-            {destination.name}
-          </h1>
+          {/* Title Header Row with Wishlist Button on the Right */}
+          <div className="flex items-center justify-between gap-4">
+            <h1 className="text-4xl font-extrabold tracking-tight text-slate-900 md:text-5xl lg:text-6xl">
+              {destination.name}
+            </h1>
+
+            <div className="shrink-0">
+              <WishlistButton
+                itemId={destination.id}
+                itemType="DESTINATION"
+                defaultActive={isWishlisted}
+                label={`Toggle wishlist for ${destination.name}`}
+              />
+            </div>
+          </div>
 
           {destination.summary && (
             <p className="mt-2 max-w-3xl text-base text-slate-600 md:text-lg">
@@ -169,7 +189,7 @@ export default async function DestinationDetail({
         {/* Two-Column Details & Aligned Enquiry Form Section */}
         <section className="grid gap-8 lg:grid-cols-12 items-start">
           <div className="lg:col-span-6 space-y-6">
-            
+
             {/* Description Card */}
             <div className="rounded-3xl border border-slate-200/80 bg-white p-6 shadow-xs sm:p-8">
               <span className="text-xs uppercase tracking-widest font-bold text-amber-600 block mb-2">
@@ -278,11 +298,10 @@ export default async function DestinationDetail({
                     {Array.from({ length: 5 }).map((_, i) => (
                       <Star
                         key={i}
-                        className={`h-4 w-4 ${
-                          i < Math.round(Number(averageRating))
+                        className={`h-4 w-4 ${i < Math.round(Number(averageRating))
                             ? "fill-amber-400 text-amber-400"
                             : "text-slate-200"
-                        }`}
+                          }`}
                       />
                     ))}
                   </div>
@@ -313,9 +332,8 @@ export default async function DestinationDetail({
                         {Array.from({ length: 5 }).map((_, i) => (
                           <Star
                             key={i}
-                            className={`h-4 w-4 ${
-                              i < review.rating ? "fill-amber-400 text-amber-400" : "text-slate-200"
-                            }`}
+                            className={`h-4 w-4 ${i < review.rating ? "fill-amber-400 text-amber-400" : "text-slate-200"
+                              }`}
                           />
                         ))}
                       </div>
