@@ -18,6 +18,67 @@ export type WishlistActionState = {
   active: boolean;
 };
 
+type PrismaClientLike = ReturnType<typeof getPrisma>;
+
+// Only touches the DB with a write when the destination is genuinely
+// missing. The previous version ran `destination.upsert` unconditionally
+// on every toggle whenever the id matched a fallback entry — a full write
+// query on the critical path of every single click, even for destinations
+// that were already synced.
+async function ensureDestinationExists(prisma: PrismaClientLike, itemId: string) {
+  const destination = await prisma.destination.findUnique({
+    where: { id: itemId },
+    select: { id: true },
+  });
+  if (destination) return true;
+
+  const fallback = fallbackDestinations.find((dest) => dest.id === itemId);
+  if (!fallback) return false;
+
+  await prisma.destination.create({
+    data: {
+      id: fallback.id,
+      name: fallback.name,
+      slug: fallback.slug,
+      country: fallback.country,
+      region: fallback.region,
+      summary: fallback.summary,
+      description: fallback.description,
+      heroImageUrl: fallback.image,
+      isPublished: true,
+    },
+  });
+
+  return true;
+}
+
+// Same idea for packages — the previous version called getJourneys()
+// (an uncached findMany) on every single package toggle, whether or not
+// the package already existed.
+async function ensurePackageExists(prisma: PrismaClientLike, itemId: string) {
+  const journeyPackage = await prisma.package.findUnique({
+    where: { id: itemId },
+    select: { id: true },
+  });
+  if (journeyPackage) return true;
+
+  const journeys = await getJourneys();
+  const fallbackJourney = journeys.find((journey) => journey.id === itemId);
+  if (!fallbackJourney) return false;
+
+  await prisma.package.create({
+    data: {
+      id: fallbackJourney.id,
+      title: fallbackJourney.title,
+      slug: fallbackJourney.slug,
+      summary: fallbackJourney.summary,
+      isPublished: true,
+    },
+  });
+
+  return true;
+}
+
 export async function toggleWishlist(
   _previous: WishlistActionState,
   formData: FormData,
@@ -36,131 +97,52 @@ export async function toggleWishlist(
     };
   }
 
+  const { itemId, itemType } = parsed.data;
+
   try {
     const prisma = getPrisma();
-    const { itemId, itemType } = parsed.data;
 
-    // -------------------------------------------------------------
-    // DESTINATION HANDLER
-    // -------------------------------------------------------------
-    if (itemType === "DESTINATION") {
-      const fallback = fallbackDestinations.find((dest) => dest.id === itemId);
+    const exists =
+      itemType === "DESTINATION"
+        ? await ensureDestinationExists(prisma, itemId)
+        : await ensurePackageExists(prisma, itemId);
 
-      if (fallback) {
-        await prisma.destination.upsert({
-          where: { id: fallback.id },
-          update: {
-            name: fallback.name,
-            slug: fallback.slug,
-            country: fallback.country,
-            region: fallback.region,
-            summary: fallback.summary,
-            description: fallback.description,
-            heroImageUrl: fallback.image,
-          },
-          create: {
-            id: fallback.id,
-            name: fallback.name,
-            slug: fallback.slug,
-            country: fallback.country,
-            region: fallback.region,
-            summary: fallback.summary,
-            description: fallback.description,
-            heroImageUrl: fallback.image,
-            isPublished: true,
-          },
-        });
-      }
-
-      const destination = await prisma.destination.findUnique({
-        where: { id: itemId },
-        select: { id: true },
-      });
-
-      if (!destination) {
-        return { ok: false, message: "Destination unavailable.", active: false };
-      }
-
-      const existing = await prisma.wishlistItem.findFirst({
-        where: { userId: user.id, destinationId: itemId },
-        select: { id: true },
-      });
-
-      if (existing) {
-        await prisma.wishlistItem.delete({ where: { id: existing.id } });
-        revalidatePath("/wishlist");
-        revalidatePath("/destinations");
-        return { ok: true, message: "Removed from wishlist.", active: false };
-      }
-
-      await prisma.wishlistItem.create({
-        data: {
-          userId: user.id,
-          itemType: "DESTINATION",
-          destinationId: itemId,
-        },
-      });
-
-      revalidatePath("/wishlist");
-      revalidatePath("/destinations");
-      return { ok: true, message: "Saved to wishlist.", active: true };
+    if (!exists) {
+      return {
+        ok: false,
+        message:
+          itemType === "DESTINATION" ? "Destination unavailable." : "Journey unavailable.",
+        active: false,
+      };
     }
 
-    // -------------------------------------------------------------
-    // PACKAGE / JOURNEY HANDLER
-    // -------------------------------------------------------------
-    const journeys = await getJourneys();
-    const fallbackJourney = journeys.find((j) => j.id === itemId);
+    const where =
+      itemType === "DESTINATION"
+        ? { userId: user.id, destinationId: itemId }
+        : { userId: user.id, packageId: itemId };
 
-    if (fallbackJourney) {
-      await prisma.package.upsert({
-        where: { id: fallbackJourney.id },
-        update: {
-          title: fallbackJourney.title,
-          slug: fallbackJourney.slug,
-          summary: fallbackJourney.summary,
-        },
-        create: {
-          id: fallbackJourney.id,
-          title: fallbackJourney.title,
-          slug: fallbackJourney.slug,
-          summary: fallbackJourney.summary,
-          isPublished: true,
-        },
-      });
-    }
+    const revalidateTargets =
+      itemType === "DESTINATION" ? ["/wishlist", "/destinations"] : ["/wishlist", "/journeys"];
 
-    const journeyPackage = await prisma.package.findUnique({
-      where: { id: itemId },
-      select: { id: true },
-    });
+    // Try removal first. A single indexed deleteMany tells us in ONE round
+    // trip whether the item was already saved, instead of the previous
+    // findFirst (1 query) + delete (1 query) pair.
+    const removed = await prisma.wishlistItem.deleteMany({ where });
 
-    if (!journeyPackage) {
-      return { ok: false, message: "Journey unavailable.", active: false };
-    }
-
-    const existingPackage = await prisma.wishlistItem.findFirst({
-      where: { userId: user.id, packageId: itemId },
-      select: { id: true },
-    });
-
-    if (existingPackage) {
-      await prisma.wishlistItem.delete({ where: { id: existingPackage.id } });
-      revalidatePath("/wishlist");
-      revalidatePath("/journeys");
+    if (removed.count > 0) {
+      revalidateTargets.forEach((path) => revalidatePath(path));
       return { ok: true, message: "Removed from wishlist.", active: false };
     }
 
     await prisma.wishlistItem.create({
       data: {
         userId: user.id,
-        itemType: "PACKAGE",
-        packageId: itemId,
+        itemType,
+        ...(itemType === "DESTINATION" ? { destinationId: itemId } : { packageId: itemId }),
       },
     });
 
-    revalidatePath("/wishlist");
-    revalidatePath("/journeys");
+    revalidateTargets.forEach((path) => revalidatePath(path));
     return { ok: true, message: "Saved to wishlist.", active: true };
   } catch (error) {
     console.error("Wishlist Toggle Error:", error);

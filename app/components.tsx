@@ -5,13 +5,13 @@ import Link from "next/link";
 import { ArrowRight, CheckCircle2, CircleAlert, Compass, Globe2, Heart, Menu, MessageCircle, UserCircle2, X, Star } from "lucide-react";
 import { useActionState, useEffect, useState } from "react";
 import { logIn, logOut, signUp, type AuthActionState } from "./actions/auth";
-import { createEnquiry, type EnquiryActionState } from "./actions/enquiries";
 import { toggleWishlist, type WishlistActionState } from "./actions/wishlist";
 import type { DestinationData } from "./lib/data";
 import React, { useMemo, useRef, useDeferredValue } from "react";
 import { City, Country } from "country-state-city";
 import { Check, ChevronDown, MapPin, Search } from "lucide-react";
 import { SwipeableImageCarousel } from "./swipeable-image-carousel";
+import { startTransition, useOptimistic } from "react";
 
 export function Logo({ compact = false }: { compact?: boolean }) {
   return (
@@ -363,10 +363,29 @@ export function WishlistButton({
     initialState
   );
 
-  const active = state.message ? state.active : defaultActive;
+  const settledActive = state.message ? state.active : defaultActive;
+
+  // The server round trip (auth check + DB reads/writes) will always have
+  // some latency, however fast the queries are. Flip the heart the instant
+  // the user clicks instead of waiting for the response, then let it
+  // reconcile with the real result once the action settles — a failed
+  // toggle naturally snaps back to `settledActive` since that's what this
+  // optimistic value is layered on top of.
+  const [active, setOptimisticActive] = useOptimistic(
+    settledActive,
+    (_current: boolean, next: boolean) => next
+  );
 
   return (
-    <form action={formAction} className="relative inline-flex items-center">
+    <form
+      action={(formData) => {
+        startTransition(() => {
+          setOptimisticActive(!active);
+          formAction(formData);
+        });
+      }}
+      className="relative inline-flex items-center"
+    >
       <input type="hidden" name="itemId" value={itemId} />
       <input type="hidden" name="itemType" value={itemType} />
 
@@ -391,9 +410,7 @@ export function WishlistButton({
           key={`${state.message}-${state.active}`}
           role="status"
           className={`absolute top-full right-0 mt-2 z-50 flex items-center gap-2 whitespace-nowrap rounded-xl px-3 py-2 text-xs font-semibold shadow-md transition-all ${
-            state.ok
-              ? "bg-slate-900 text-white"
-              : "bg-rose-600 text-white"
+            state.ok ? "bg-slate-900 text-white" : "bg-rose-600 text-white"
           }`}
         >
           {state.ok ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}

@@ -1,8 +1,15 @@
 "use server";
 
 import { z } from "zod";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { redirect } from "next/navigation";
-import { clearSession, createSession, hashPassword, verifyPassword } from "../lib/auth";
+import {
+  clearSession,
+  createSession,
+  hashPassword,
+  hasUsablePassword,
+  verifyPassword,
+} from "../lib/auth";
 import { getPrisma } from "../lib/db";
 
 export type AuthActionState = { ok: boolean; message: string } | null;
@@ -17,6 +24,25 @@ const loginSchema = z.object({
   email: z.string().trim().email().max(180),
   password: z.string().min(1).max(128),
 });
+
+// A fixed, non-secret scrypt hash — never derived from a real password —
+// used as the comparison target when there's no usable password to check
+// against (account doesn't exist, or only has the enquiry-flow placeholder
+// hash — see hasUsablePassword). This makes verifyPassword() run its full
+// cost either way, so response timing can't be used to enumerate which
+// emails have real accounts.
+const DUMMY_PASSWORD_HASH = `${"0".repeat(32)}:${"0".repeat(128)}`;
+
+// Plain `===` on a secret (the admin password) leaks timing information
+// proportional to how many leading characters match. Comparing fixed-length
+// digests with timingSafeEqual removes that signal, and sidesteps
+// timingSafeEqual's requirement that both buffers be the same length (raw
+// input strings won't be, in general).
+function timingSafeStringEqual(a: string, b: string) {
+  const aHash = createHash("sha256").update(a).digest();
+  const bHash = createHash("sha256").update(b).digest();
+  return timingSafeEqual(aHash, bHash);
+}
 
 export async function signUp(
   _previous: AuthActionState,
@@ -33,7 +59,15 @@ export async function signUp(
     const prisma = getPrisma();
     const existing = await prisma.user.findUnique({ where: { email } });
 
-    if (existing?.passwordHash) {
+    // Previously checked `existing?.passwordHash` truthiness, which was
+    // always true for users created via actions/enquiry.ts (they got a
+    // real hashPassword() of a random UUID as a placeholder) — meaning
+    // anyone who'd ever submitted the enquiry form was permanently
+    // blocked from signing up with that email. hasUsablePassword()
+    // recognizes the enquiry-flow placeholder specifically and treats it
+    // the same as "no password set yet", so this now correctly falls
+    // through to the update-existing-row branch below instead.
+    if (hasUsablePassword(existing?.passwordHash)) {
       return { ok: false, message: "An account already exists for this email." };
     }
 
@@ -73,11 +107,21 @@ export async function logIn(
       return { ok: false, message: "Use the admin login page to access the dashboard." };
     }
 
-    if (!user?.passwordHash || !(await verifyPassword(parsed.data.password, user.passwordHash))) {
+    const usablePassword = hasUsablePassword(user?.passwordHash);
+
+    // Always run verifyPassword, whether or not there's a usable password
+    // to check against, so response timing can't distinguish "no account",
+    // "enquiry-only account with no password set", and "wrong password".
+    const passwordValid = await verifyPassword(
+      parsed.data.password,
+      usablePassword ? user.passwordHash : DUMMY_PASSWORD_HASH
+    );
+
+    if (!usablePassword || !passwordValid) {
       return { ok: false, message: "Email or password is incorrect." };
     }
 
-    await createSession(user.id);
+    await createSession(user!.id);
   } catch {
     return { ok: false, message: "We could not sign you in right now." };
   }
@@ -102,10 +146,14 @@ export async function adminLogIn(
     const envEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
     const envPassword = process.env.ADMIN_PASSWORD;
 
-    const envAdminMatch =
-      envEmail && envPassword && email === envEmail && password === envPassword;
+    const envAdminMatch = Boolean(
+      envEmail &&
+        envPassword &&
+        email === envEmail &&
+        timingSafeStringEqual(password, envPassword)
+    );
 
-    if (envAdminMatch) {
+    if (envAdminMatch && envPassword) {
       const adminUser = await prisma.user.upsert({
         where: { email },
         update: {
@@ -126,12 +174,17 @@ export async function adminLogIn(
     }
 
     const adminUser = await prisma.user.findUnique({ where: { email } });
+    const usablePassword = hasUsablePassword(adminUser?.passwordHash);
 
-    if (!adminUser || adminUser.role !== "admin") {
-      return { ok: false, message: "Invalid admin credentials." };
-    }
+    // Same constant-time reasoning as logIn(): run verifyPassword either
+    // way so a nonexistent admin email and a wrong password for a real
+    // admin email take the same amount of time to reject.
+    const passwordValid = await verifyPassword(
+      password,
+      usablePassword ? adminUser.passwordHash : DUMMY_PASSWORD_HASH
+    );
 
-    if (!adminUser.passwordHash || !(await verifyPassword(password, adminUser.passwordHash))) {
+    if (!adminUser || adminUser.role !== "admin" || !usablePassword || !passwordValid) {
       return { ok: false, message: "Invalid admin credentials." };
     }
 

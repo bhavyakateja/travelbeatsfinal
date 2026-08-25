@@ -3,8 +3,9 @@
 import { z } from "zod";
 import { Resend } from "resend";
 import { randomUUID } from "node:crypto";
+import { after } from "next/server";
 
-import { hashPassword } from "@/app/lib/auth";
+import { createPlaceholderPasswordHash } from "@/app/lib/auth";
 import { getPrisma } from "@/app/lib/db";
 
 const enquirySchema = z
@@ -87,6 +88,104 @@ function createEnquiryReference() {
   return `TB-${timestamp}-${unique}`;
 }
 
+type EmailPayload = {
+  reference: string;
+  fullName: string;
+  email: string;
+  phone: string | null;
+  destination: string | null;
+  travelStart: string | null;
+  travelEnd: string | null;
+  adults: number;
+  children: number;
+  message: string | null;
+};
+
+/*
+ * ---------------------------------------------------------
+ * EMAIL DELIVERY (runs AFTER the response is sent)
+ * ---------------------------------------------------------
+ * This used to run inline before returning to the user, so every
+ * enquiry submission waited on Resend's API round trip (typically
+ * 200ms-1s+) on top of every DB write. The enquiry is already safely
+ * committed by the time this runs — email delivery is best-effort and
+ * has its own retry/failure tracking via the outbox row, so there's no
+ * correctness reason to make the user wait on it.
+ */
+async function sendEnquiryEmail(notificationId: string, payload: EmailPayload) {
+  const prisma = getPrisma();
+
+  const adminEmail = process.env.TRAVEL_BEATS_ADMIN_EMAIL || process.env.ADMIN_EMAIL;
+  const resendApiKey = process.env.RESEND_API_KEY;
+  const fromEmail = process.env.RESEND_FROM_EMAIL;
+
+  if (!adminEmail || !resendApiKey || !fromEmail) {
+    return;
+  }
+
+  try {
+    const resend = new Resend(resendApiKey);
+
+    const emailResult = await resend.emails.send({
+      from: fromEmail,
+      to: adminEmail,
+      replyTo: payload.email,
+      subject: `New Travel Enquiry — ${payload.reference}`,
+      text: [
+        "NEW TRAVEL ENQUIRY",
+        "===================",
+        "",
+        `Reference: ${payload.reference}`,
+        "",
+        "CUSTOMER DETAILS",
+        "-----------------",
+        `Name: ${payload.fullName}`,
+        `Email: ${payload.email}`,
+        `Phone: ${payload.phone || "Not provided"}`,
+        "",
+        "TRIP DETAILS",
+        "------------",
+        `Destination: ${payload.destination || "Not specified"}`,
+        `Travel start: ${payload.travelStart || "Flexible"}`,
+        `Travel end: ${payload.travelEnd || "Flexible"}`,
+        `Adults: ${payload.adults}`,
+        `Children: ${payload.children}`,
+        "",
+        "MESSAGE",
+        "-------",
+        payload.message || "No message provided",
+        "",
+        "===================",
+        "Submitted from The Travel Beats website.",
+      ].join("\n"),
+    });
+
+    if (emailResult.error) {
+      throw new Error(emailResult.error.message || "Resend email delivery failed");
+    }
+
+    await prisma.notificationOutbox.update({
+      where: { id: notificationId },
+      data: {
+        status: "SENT",
+        sentAt: new Date(),
+        attempts: { increment: 1 },
+        lastError: null,
+      },
+    });
+  } catch (error) {
+    // The enquiry is already safely stored — only email delivery failed.
+    await prisma.notificationOutbox.update({
+      where: { id: notificationId },
+      data: {
+        status: "FAILED",
+        attempts: { increment: 1 },
+        lastError: error instanceof Error ? error.message : "Email delivery failed",
+      },
+    });
+  }
+}
+
 export async function createEnquiry(
   _previousState: EnquiryActionState,
   formData: FormData,
@@ -107,108 +206,76 @@ export async function createEnquiry(
 
     /*
      * ---------------------------------------------------------
-     * 1. Find or create the customer
+     * 1 & 2. Find-or-create the customer AND resolve the
+     * destination in parallel — neither depends on the other's
+     * result, so there's no reason to pay for two round trips
+     * back to back when one round trip's worth of latency covers
+     * both.
      * ---------------------------------------------------------
      */
+    const destinationSlug = data.destination
+      ? data.destination.toLowerCase().trim().replace(/\s+/g, "-")
+      : null;
 
-    const user = await prisma.user.upsert({
-      where: {
-        email: data.email,
-      },
-
-      update: {
-        fullName: data.fullName,
-        phone: data.phone || null,
-      },
-
-      create: {
-        email: data.email,
-        fullName: data.fullName,
-        phone: data.phone || null,
-
-        // Random password because this user is being created
-        // from an enquiry rather than a normal signup flow.
-        passwordHash: await hashPassword(randomUUID()),
-      },
-    });
-
-    /*
-     * ---------------------------------------------------------
-     * 2. Resolve destination if supplied
-     * ---------------------------------------------------------
-     */
-
-    let destination: { id: string } | null = null;
-
-    if (data.destination) {
-      const slug = data.destination
-        .toLowerCase()
-        .trim()
-        .replace(/\s+/g, "-");
-
-      destination = await prisma.destination.findFirst({
-        where: {
-          OR: [
-            {
-              slug,
-            },
-            {
-              name: {
-                equals: data.destination,
-                mode: "insensitive",
-              },
-            },
-          ],
+    const [user, destination] = await Promise.all([
+      prisma.user.upsert({
+        where: { email: data.email },
+        update: {
+          fullName: data.fullName,
+          phone: data.phone || null,
         },
-
-        select: {
-          id: true,
+        create: {
+          email: data.email,
+          fullName: data.fullName,
+          phone: data.phone || null,
+          // Placeholder, not a real password — this user is being created
+          // from an enquiry rather than a normal signup flow. Uses a
+          // sentinel format (see lib/auth.ts) so signUp() can later tell
+          // this apart from a real password and let them complete signup
+          // normally instead of being told the account "already exists".
+          // Also skips the scrypt cost hashPassword() would have paid on
+          // every single enquiry submission for a value nobody will ever
+          // authenticate with.
+          passwordHash: createPlaceholderPasswordHash(),
         },
-      });
-    }
+      }),
+      data.destination
+        ? prisma.destination.findFirst({
+            where: {
+              OR: [
+                { slug: destinationSlug! },
+                { name: { equals: data.destination, mode: "insensitive" } },
+              ],
+            },
+            select: { id: true },
+          })
+        : Promise.resolve(null as { id: string } | null),
+    ]);
 
     /*
      * ---------------------------------------------------------
      * 3. Create enquiry in database
      * ---------------------------------------------------------
      */
-
     const enquiry = await prisma.enquiry.create({
       data: {
         userId: user.id,
-
         destinationId: destination?.id ?? null,
-
         packageId: null,
-
         reference: createEnquiryReference(),
-
         source: "website",
-
         type: destination ? "DESTINATION" : "CUSTOM_TRIP",
-
         status: "NEW",
-
-        travelStart: data.travelStart
-          ? new Date(data.travelStart)
-          : null,
-
-        travelEnd: data.travelEnd
-          ? new Date(data.travelEnd)
-          : null,
-
+        travelStart: data.travelStart ? new Date(data.travelStart) : null,
+        travelEnd: data.travelEnd ? new Date(data.travelEnd) : null,
         travellersAdults: data.adults,
-
         travellersChildren: data.children,
-
         message: data.message || null,
-
         contactSnapshot: {
           fullName: data.fullName,
           email: data.email,
           phone: data.phone || null,
         },
-
         tripDetails: {
           adults: data.adults,
           children: data.children,
@@ -221,208 +288,69 @@ export async function createEnquiry(
 
     /*
      * ---------------------------------------------------------
-     * 4. Email configuration
+     * 4. Create notification outbox record
      * ---------------------------------------------------------
      */
-
-    const adminEmail =
-      process.env.TRAVEL_BEATS_ADMIN_EMAIL ||
-      process.env.ADMIN_EMAIL;
-
+    const adminEmail = process.env.TRAVEL_BEATS_ADMIN_EMAIL || process.env.ADMIN_EMAIL;
     const resendApiKey = process.env.RESEND_API_KEY;
-
     const fromEmail = process.env.RESEND_FROM_EMAIL;
+    const emailConfigured = Boolean(adminEmail && resendApiKey && fromEmail);
 
-    const emailConfigured = Boolean(
-      adminEmail &&
-        resendApiKey &&
-        fromEmail,
-    );
+    const emailPayload: EmailPayload = {
+      reference: enquiry.reference,
+      fullName: data.fullName,
+      email: data.email,
+      phone: data.phone || null,
+      destination: data.destination || null,
+      travelStart: data.travelStart || null,
+      travelEnd: data.travelEnd || null,
+      adults: data.adults,
+      children: data.children,
+      message: data.message || null,
+    };
 
-    /*
-     * ---------------------------------------------------------
-     * 5. Create notification outbox record
-     * ---------------------------------------------------------
-     */
-
-    const notification =
-      await prisma.notificationOutbox.create({
-        data: {
-          enquiryId: enquiry.id,
-
-          kind: "NEW_ENQUIRY_EMAIL",
-
-          recipient: adminEmail || "",
-
-          status: emailConfigured
-            ? "PENDING"
-            : "FAILED",
-
-          lastError: emailConfigured
-            ? null
-            : "Email delivery is not configured.",
-
-          payload: {
-            reference: enquiry.reference,
-
-            fullName: data.fullName,
-
-            email: data.email,
-
-            phone: data.phone || null,
-
-            destination: data.destination || null,
-
-            travelStart: data.travelStart || null,
-
-            travelEnd: data.travelEnd || null,
-
-            adults: data.adults,
-
-            children: data.children,
-
-            message: data.message || null,
-          },
-        },
-      });
+    const notification = await prisma.notificationOutbox.create({
+      data: {
+        enquiryId: enquiry.id,
+        kind: "NEW_ENQUIRY_EMAIL",
+        recipient: adminEmail || "",
+        status: emailConfigured ? "PENDING" : "FAILED",
+        lastError: emailConfigured ? null : "Email delivery is not configured.",
+        payload: emailPayload,
+      },
+    });
 
     /*
      * ---------------------------------------------------------
-     * 6. Send email to admin
+     * 5. Send email AFTER the response goes out
      * ---------------------------------------------------------
+     * The enquiry + outbox row are already durably saved at this
+     * point, which is all the user's success message depends on.
+     * `after()` schedules the actual Resend call (and the outbox
+     * status update) to run once the response has been flushed,
+     * so form submission latency is just the DB writes above —
+     * not DB writes + an external API round trip.
      */
-
-    if (
-      emailConfigured &&
-      adminEmail &&
-      resendApiKey &&
-      fromEmail
-    ) {
-      try {
-        const resend = new Resend(resendApiKey);
-
-        const emailResult = await resend.emails.send({
-          from: fromEmail,
-
-          to: adminEmail,
-
-          replyTo: data.email,
-
-          subject: `New Travel Enquiry — ${enquiry.reference}`,
-
-          text: [
-            "NEW TRAVEL ENQUIRY",
-            "===================",
-            "",
-            `Reference: ${enquiry.reference}`,
-            "",
-            "CUSTOMER DETAILS",
-            "-----------------",
-            `Name: ${data.fullName}`,
-            `Email: ${data.email}`,
-            `Phone: ${data.phone || "Not provided"}`,
-            "",
-            "TRIP DETAILS",
-            "------------",
-            `Destination: ${
-              data.destination || "Not specified"
-            }`,
-            `Travel start: ${
-              data.travelStart || "Flexible"
-            }`,
-            `Travel end: ${
-              data.travelEnd || "Flexible"
-            }`,
-            `Adults: ${data.adults}`,
-            `Children: ${data.children}`,
-            "",
-            "MESSAGE",
-            "-------",
-            data.message || "No message provided",
-            "",
-            "===================",
-            "Submitted from The Travel Beats website.",
-          ].join("\n"),
-        });
-
-        /*
-         * Resend can return an error without throwing.
-         */
-        if (emailResult.error) {
-          throw new Error(
-            emailResult.error.message ||
-              "Resend email delivery failed",
-          );
-        }
-
-        /*
-         * Mark notification as successfully sent.
-         */
-        await prisma.notificationOutbox.update({
-          where: {
-            id: notification.id,
-          },
-
-          data: {
-            status: "SENT",
-
-            sentAt: new Date(),
-
-            attempts: {
-              increment: 1,
-            },
-
-            lastError: null,
-          },
-        });
-      } catch (error) {
-        /*
-         * The enquiry is already safely stored.
-         *
-         * Only email delivery failed.
-         */
-        await prisma.notificationOutbox.update({
-          where: {
-            id: notification.id,
-          },
-
-          data: {
-            status: "FAILED",
-
-            attempts: {
-              increment: 1,
-            },
-
-            lastError:
-              error instanceof Error
-                ? error.message
-                : "Email delivery failed",
-          },
-        });
-      }
+    if (emailConfigured) {
+      after(() => sendEnquiryEmail(notification.id, emailPayload));
     }
 
     /*
      * ---------------------------------------------------------
-     * 7. Always return success if enquiry was saved
+     * 6. Always return success if enquiry was saved
      * ---------------------------------------------------------
-     *
-     * Even if email fails, the customer enquiry exists
-     * in the database.
+     * Even if email fails, the customer enquiry exists in the DB.
      */
-
     return {
       ok: true,
-      message:
-        "Thanks — your travel request is with our team.",
+      message: "Thanks — your travel request is with our team.",
     };
   } catch (error) {
     console.error("Create enquiry failed:", error);
 
     return {
       ok: false,
-      message:
-        "We could not save your request right now. Please try again shortly.",
+      message: "We could not save your request right now. Please try again shortly.",
     };
   }
 }
