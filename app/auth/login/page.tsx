@@ -32,7 +32,10 @@ export default function Login() {
           </div>
         </section>
 
-        <AuthForms mode="signin" />
+        {/* Added wrapper container to control card sizing */}
+        <div className="mx-auto my-8 max-w-md w-full px-4">
+          <AuthForms mode="signin" />
+        </div>
       </main>
       <SiteFooter />
     </>

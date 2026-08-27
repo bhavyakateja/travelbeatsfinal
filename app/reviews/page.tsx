@@ -57,7 +57,12 @@ export default async function ReviewsPage({
     where: {
       status: "APPROVED",
     },
-    include: {
+    select: {
+      id: true,
+      rating: true,
+      title: true,
+      comment: true,
+      adminReply: true, // <-- 1. FETCH ADMIN REPLY FROM DATABASE
       user: {
         select: { fullName: true },
       },
@@ -117,13 +122,13 @@ export default async function ReviewsPage({
               <div>
                 <p className="font-bold text-sm">Thank you for sharing your experience!</p>
                 <p className="text-xs text-emerald-700">
-                  Your review has been submitted and sent to our team for approval.
+                  Your review has been submitted and sent to our team.
                 </p>
               </div>
             </div>
           )}
 
-          {/* 1. WRITE A REVIEW FORM (PLACED FIRST) */}
+          {/* 1. WRITE A REVIEW FORM */}
           <section className="bg-white p-8 md:p-10 rounded-3xl border border-slate-200 shadow-xl">
             <div className="flex items-center gap-2 text-[#00A8E8] font-bold text-xs uppercase tracking-widest mb-2">
               <MessageSquarePlus size={18} />
@@ -240,7 +245,7 @@ export default async function ReviewsPage({
             </form>
           </section>
 
-          {/* 2. TRAVELER REVIEWS DISPLAY GRID (BELOW FORM) */}
+          {/* 2. TRAVELER REVIEWS DISPLAY GRID */}
           <section className="space-y-6">
             <h2 className="text-2xl font-bold text-[#031838]">
               Traveler Reviews ({reviews.length})
@@ -272,9 +277,19 @@ export default async function ReviewsPage({
                         </h3>
                       )}
 
-                      <p className="text-slate-600 text-sm italic leading-relaxed mb-6">
+                      <p className="text-slate-600 text-sm italic leading-relaxed mb-4">
                         "{rev.comment}"
                       </p>
+
+                      {/* 2. RENDER ADMIN REPLY IF PRESENT */}
+                      {rev.adminReply && (
+                        <div className="mb-6 p-3.5 rounded-xl bg-sky-50 border border-sky-100 text-xs">
+                          <p className="font-bold text-[#00A8E8] mb-1">Response from Team:</p>
+                          <p className="text-slate-700 leading-relaxed font-normal not-italic">
+                            {rev.adminReply}
+                          </p>
+                        </div>
+                      )}
                     </div>
 
                     <div className="pt-4 border-t border-slate-100">

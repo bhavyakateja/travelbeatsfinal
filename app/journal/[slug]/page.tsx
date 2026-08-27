@@ -2,7 +2,9 @@
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Clock, Calendar, Share2, Sparkles, MapPin } from "lucide-react";
+import { ArrowLeft, Clock, Calendar, Sparkles, MapPin } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { SiteFooter, SiteHeader } from "../../components";
 import { getPrisma } from "../../lib/db";
 
@@ -138,14 +140,11 @@ export default async function JournalArticlePage({ params }: JournalArticleProps
             
             {/* Main Content Area */}
             <div className="lg:col-span-12 space-y-8">
-              <div className="prose prose-slate prose-lg max-w-none prose-headings:text-[#031838] prose-headings:font-bold prose-a:text-[#00A8E8] hover:prose-a:underline prose-blockquote:border-l-[#00A8E8] prose-blockquote:text-[#031838] prose-blockquote:font-serif prose-blockquote:italic">
-                {/* Render paragraphs cleanly from database body string */}
-                {post.body.split("\n\n").map((paragraph, idx) => (
-                  <p key={idx} className="text-slate-700 text-base md:text-lg leading-relaxed">
-                    {paragraph}
-                  </p>
-                ))}
-              </div>
+              <article className="prose prose-slate prose-lg max-w-none prose-headings:text-[#031838] prose-headings:font-bold prose-headings:mt-8 prose-headings:mb-4 prose-p:text-slate-700 prose-p:leading-relaxed prose-li:text-slate-700 prose-strong:text-slate-900 prose-a:text-[#00A8E8] hover:prose-a:underline prose-blockquote:border-l-[#00A8E8] prose-blockquote:text-[#031838] prose-blockquote:font-serif prose-blockquote:italic">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {post.body}
+                </ReactMarkdown>
+              </article>
 
               {/* Recommended Packages Callout */}
               {post.recommendedPackages.length > 0 && (

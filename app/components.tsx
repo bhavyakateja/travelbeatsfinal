@@ -13,6 +13,7 @@ import { SwipeableImageCarousel } from "./swipeable-image-carousel";
 import { startTransition, useOptimistic } from "react";
 import { createEnquiry, type EnquiryActionState } from "./actions/enquiries"
 import { PhoneNumberInput } from "./PhoneNumberInput";
+import { Eye, EyeOff } from "lucide-react";
 
 export function Logo({ compact = false }: { compact?: boolean }) {
   return (
@@ -838,6 +839,10 @@ export function AuthForms({ mode }: { mode: "signin" | "signup" }) {
     initialState
   );
 
+  // Visibility toggle states
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [showSignupPassword, setShowSignupPassword] = useState(false);
+
   return (
     <section className="auth-container">
       <div className="auth-card">
@@ -883,13 +888,36 @@ export function AuthForms({ mode }: { mode: "signin" | "signup" }) {
 
                 <label className="auth-field">
                   <span>Password</span>
-                  <input
-                    name="password"
-                    type="password"
-                    required
-                    autoComplete="current-password"
-                    placeholder="••••••••"
-                  />
+                  <div className="password-input-wrapper" style={{ position: "relative", width: "100%" }}>
+                    <input
+                      name="password"
+                      type={showLoginPassword ? "text" : "password"}
+                      required
+                      autoComplete="current-password"
+                      placeholder="••••••••"
+                      style={{ width: "100%", paddingRight: "2.5rem" }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowLoginPassword((prev) => !prev)}
+                      aria-label={showLoginPassword ? "Hide password" : "Show password"}
+                      style={{
+                        position: "absolute",
+                        right: "0.75rem",
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        background: "none",
+                        border: "none",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        padding: 0,
+                        color: "#6b7280"
+                      }}
+                    >
+                      {showLoginPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                  </div>
                 </label>
                 <Link className="auth-forgot-link" href="/auth/forgot-password">
                   Forgot your password?
@@ -938,14 +966,37 @@ export function AuthForms({ mode }: { mode: "signin" | "signup" }) {
 
                 <label className="auth-field">
                   <span>Password</span>
-                  <input
-                    name="password"
-                    type="password"
-                    minLength={8}
-                    required
-                    autoComplete="new-password"
-                    placeholder="Min. 8 characters"
-                  />
+                  <div className="password-input-wrapper" style={{ position: "relative", width: "100%" }}>
+                    <input
+                      name="password"
+                      type={showSignupPassword ? "text" : "password"}
+                      minLength={8}
+                      required
+                      autoComplete="new-password"
+                      placeholder="Min. 8 characters"
+                      style={{ width: "100%", paddingRight: "2.5rem" }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSignupPassword((prev) => !prev)}
+                      aria-label={showSignupPassword ? "Hide password" : "Show password"}
+                      style={{
+                        position: "absolute",
+                        right: "0.75rem",
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        background: "none",
+                        border: "none",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        padding: 0,
+                        color: "#6b7280"
+                      }}
+                    >
+                      {showSignupPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                  </div>
                 </label>
               </div>
 

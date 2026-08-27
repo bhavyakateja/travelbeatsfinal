@@ -117,7 +117,7 @@ async function sendAdminNotification(notificationId: string, payload: EmailPaylo
 
   const adminEmail = process.env.TRAVEL_BEATS_ADMIN_EMAIL || process.env.ADMIN_EMAIL;
   const resendApiKey = process.env.RESEND_API_KEY;
-  const fromEmail = process.env.RESEND_FROM_EMAIL;
+  const fromEmail = process.env.RESEND_ENQUIRY_FROM_EMAIL;
 
   if (!adminEmail || !resendApiKey || !fromEmail) {
     return;

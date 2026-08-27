@@ -1,7 +1,7 @@
 import Image from "next/image";
 import { AuthForms, SiteFooter, SiteHeader } from "../../components";
 
-export default function Login() {
+export default function Signup() {
   return (
     <>
       <SiteHeader />
@@ -32,7 +32,10 @@ export default function Login() {
           </div>
         </section>
 
-        <AuthForms mode="signup" />
+        {/* Centered Card Wrapper for Signup */}
+        <div className="mx-auto my-8 max-w-md w-full px-4">
+          <AuthForms mode="signup" />
+        </div>
       </main>
       <SiteFooter />
     </>

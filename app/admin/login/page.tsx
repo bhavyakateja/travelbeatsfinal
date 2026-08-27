@@ -1,10 +1,9 @@
 "use client";
 
-import React, { useActionState } from "react";
-import Image from "next/image";
+import React, { useState, useActionState } from "react";
 import Link from "next/link";
 import { useFormStatus } from "react-dom";
-import { ArrowRight, Loader2, Lock } from "lucide-react";
+import { ArrowRight, Eye, EyeOff, Loader2, Lock } from "lucide-react";
 
 import { adminLogIn } from "@/app/actions/auth";
 
@@ -34,95 +33,98 @@ function SubmitButton() {
 
 export default function AdminLoginPage() {
   const [state, formAction] = useActionState(adminLogIn, null);
+  const [showPassword, setShowPassword] = useState(false);
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 antialiased">
-      <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center p-4 sm:p-6">
-        <div className="grid w-full max-w-5xl overflow-hidden rounded-3xl border border-white/10 bg-slate-900/80 shadow-2xl backdrop-blur-xl md:grid-cols-[1.2fr_0.8fr]">
-          <div className="relative hidden min-h-[420px] md:block">
-            <Image
-              src="/media/journey-sky.jpg"
-              alt="Travel planning"
-              fill
-              className="object-cover"
-              priority
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent" />
-            <div className="relative z-10 flex h-full flex-col justify-end p-8">
-              <span className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-400">
-                Private Access
-              </span>
-              <h1 className="mt-2 text-3xl font-bold leading-tight text-white lg:text-4xl">
-                Travel Beats Admin
-              </h1>
-              <p className="mt-2 max-w-sm text-sm text-slate-300">
-                Manage destinations, journeys, journal stories, enquiries, users, and review submissions.
+      <div className="mx-auto flex min-h-screen max-w-xl flex-col items-center justify-center p-4 sm:p-6">
+        {/* Header content originally overlaying the image */}
+        <div className="mb-6 w-full text-center">
+          <span className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-400">
+            Private Access
+          </span>
+          <h1 className="mt-2 text-3xl font-bold leading-tight text-white lg:text-4xl">
+            Travel Beats Admin
+          </h1>
+          <p className="mx-auto mt-2 max-w-md text-sm text-slate-300">
+            Manage destinations, journeys, journal stories, enquiries, users, and review submissions.
+          </p>
+        </div>
+
+        {/* Centered Admin Card */}
+        <div className="w-full overflow-hidden rounded-3xl border border-white/10 bg-slate-900/80 p-8 shadow-2xl backdrop-blur-xl md:p-10">
+          <div className="mb-8 flex items-center justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-widest text-sky-400">
+                Secure Sign In
               </p>
+              <h2 className="mt-1 text-2xl font-bold text-white">Admin Login</h2>
             </div>
+            <Link
+              href="/"
+              className="rounded-lg px-3 py-1.5 text-xs text-slate-400 transition hover:bg-white/5 hover:text-white"
+            >
+              Back to site
+            </Link>
           </div>
 
-          <div className="flex flex-col justify-between p-8 md:p-10">
+          {state && !state.ok && (
+            <div className="mb-5 rounded-xl border border-rose-500/20 bg-rose-500/10 p-3.5 text-xs text-rose-300">
+              {state.message}
+            </div>
+          )}
+
+          <form action={formAction} className="space-y-5">
             <div>
-              <div className="mb-8 flex items-center justify-between">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-widest text-sky-400">
-                    Secure Sign In
-                  </p>
-                  <h2 className="mt-1 text-2xl font-bold text-white">Admin Login</h2>
-                </div>
-                <Link
-                  href="/"
-                  className="rounded-lg px-3 py-1.5 text-xs text-slate-400 transition hover:bg-white/5 hover:text-white"
+              <label htmlFor="email" className="mb-2 block text-xs font-medium text-slate-300">
+                Admin email
+              </label>
+              <input
+                id="email"
+                name="email"
+                type="email"
+                required
+                autoComplete="email"
+                placeholder="admin@travelbeats.com"
+                className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm text-white placeholder-slate-500 outline-none transition focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="password" className="mb-2 block text-xs font-medium text-slate-300">
+                Password
+              </label>
+              <div className="relative">
+                <input
+                  id="password"
+                  name="password"
+                  type={showPassword ? "text" : "password"}
+                  required
+                  autoComplete="current-password"
+                  placeholder="••••••••"
+                  className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3 pr-11 text-sm text-white placeholder-slate-500 outline-none transition focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white focus:outline-none"
                 >
-                  Back to site
-                </Link>
+                  {showPassword ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </button>
               </div>
-
-              {state && !state.ok && (
-                <div className="mb-5 rounded-xl border border-rose-500/20 bg-rose-500/10 p-3.5 text-xs text-rose-300">
-                  {state.message}
-                </div>
-              )}
-
-              <form action={formAction} className="space-y-5">
-                <div>
-                  <label htmlFor="email" className="mb-2 block text-xs font-medium text-slate-300">
-                    Admin email
-                  </label>
-                  <input
-                    id="email"
-                    name="email"
-                    type="email"
-                    required
-                    autoComplete="email"
-                    placeholder="admin@travelbeats.com"
-                    className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm text-white placeholder-slate-500 outline-none transition focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="password" className="mb-2 block text-xs font-medium text-slate-300">
-                    Password
-                  </label>
-                  <input
-                    id="password"
-                    name="password"
-                    type="password"
-                    required
-                    autoComplete="current-password"
-                    placeholder="••••••••"
-                    className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3 text-sm text-white placeholder-slate-500 outline-none transition focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
-                  />
-                </div>
-
-                <SubmitButton />
-              </form>
             </div>
 
-            <div className="mt-8 flex items-center gap-2 border-t border-white/5 pt-4 text-xs text-slate-500">
-              <Lock className="h-3.5 w-3.5 flex-shrink-0 text-slate-400" />
-              <span>Restricted URL. Unauthorized access attempts are monitored.</span>
-            </div>
+            <SubmitButton />
+          </form>
+
+          <div className="mt-8 flex items-center justify-center gap-2 border-t border-white/5 pt-4 text-xs text-slate-500">
+            <Lock className="h-3.5 w-3.5 flex-shrink-0 text-slate-400" />
+            <span>Restricted URL. Unauthorized access attempts are monitored.</span>
           </div>
         </div>
       </div>
