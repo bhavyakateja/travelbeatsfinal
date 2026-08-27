@@ -66,10 +66,26 @@ model User {
   wishlist     WishlistItem[]
   enquiryNotes EnquiryNote[]
   reviews      Review[]
+  passwordResetTokens PasswordResetToken[]
 
   @@index([role])
   @@index([createdAt])
   @@map("users")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
 }
 
 model Destination {

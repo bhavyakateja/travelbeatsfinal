@@ -1040,6 +1040,68 @@ p {
   overflow-wrap: anywhere;
 }
 
+.profile-password-form {
+  margin-top: 32px;
+  padding-top: 28px;
+  border-top: 1px solid var(--line);
+}
+
+.profile-password-form h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 6px;
+  color: var(--ink);
+  font-size: 22px;
+  letter-spacing: -0.03em;
+}
+
+.profile-password-form > div > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.profile-password-fields {
+  display: grid;
+  gap: 13px;
+  margin-top: 20px;
+}
+
+.profile-password-fields label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.profile-password-fields input {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--ink);
+  font: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.profile-password-fields input:focus {
+  outline: 3px solid rgba(17, 75, 217, .12);
+  border-color: var(--royal);
+}
+
+.profile-password-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+}
+
 .profile-section-heading {
   display: flex;
   justify-content: space-between;
@@ -2278,6 +2340,22 @@ p {
 .auth-field input:focus {
   border-color: var(--royal);
   box-shadow: 0 0 0 4px rgba(17, 75, 217, 0.1);
+}
+
+.auth-forgot-link {
+  color: var(--royal);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.auth-forgot-link:hover { text-decoration: underline; }
+
+.auth-help-text {
+  margin: -6px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 /* Buttons */
@@ -4033,4 +4111,24 @@ p {
   .hero-actions {
     justify-content: flex-start !important;
   }
+}
+
+.form-message {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.form-message--success {
+  background-color: #e6f4ea;
+  color: #137333;
+  border: 1px solid #ceead6;
+}
+
+.form-message--error {
+  background-color: #fce8e6;
+  color: #c5221f;
+  border: 1px solid #fad2cf;
 }

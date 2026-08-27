@@ -37,6 +37,18 @@ CREATE TABLE "users" (
 );
 
 -- CreateTable
+CREATE TABLE "password_reset_tokens" (
+    "id" UUID NOT NULL,
+    "userId" UUID NOT NULL,
+    "tokenHash" TEXT NOT NULL,
+    "expiresAt" TIMESTAMP(3) NOT NULL,
+    "usedAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "password_reset_tokens_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "destinations" (
     "id" UUID NOT NULL,
     "name" TEXT NOT NULL,
@@ -230,6 +242,15 @@ CREATE INDEX "users_role_idx" ON "users"("role");
 CREATE INDEX "users_createdAt_idx" ON "users"("createdAt");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "password_reset_tokens_tokenHash_key" ON "password_reset_tokens"("tokenHash");
+
+-- CreateIndex
+CREATE INDEX "password_reset_tokens_userId_createdAt_idx" ON "password_reset_tokens"("userId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "password_reset_tokens_expiresAt_idx" ON "password_reset_tokens"("expiresAt");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "destinations_slug_key" ON "destinations"("slug");
 
 -- CreateIndex
@@ -327,6 +348,9 @@ CREATE INDEX "reviews_status_createdAt_idx" ON "reviews"("status", "createdAt");
 
 -- CreateIndex
 CREATE INDEX "_BlogPostToPackage_B_index" ON "_BlogPostToPackage"("B");
+
+-- AddForeignKey
+ALTER TABLE "password_reset_tokens" ADD CONSTRAINT "password_reset_tokens_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "packages" ADD CONSTRAINT "packages_destinationId_fkey" FOREIGN KEY ("destinationId") REFERENCES "destinations"("id") ON DELETE SET NULL ON UPDATE CASCADE;

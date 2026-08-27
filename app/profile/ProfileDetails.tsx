@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Edit2, LocateFixed, Mail, MapPin, MessageSquare, Phone, UserCircle2, X } from "lucide-react";
+import { Check, Edit2, KeyRound, LocateFixed, Mail, MapPin, MessageSquare, Phone, UserCircle2, X } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { updateProfile } from "./actions";
+import { changePassword, updateProfile } from "./actions";
 
 interface ProfileDetailsProps {
   user: {
@@ -31,6 +31,11 @@ export function ProfileDetails({ user }: ProfileDetailsProps) {
   const [loading, setLoading] = useState(false);
   const [locationLoading, setLocationLoading] = useState(false);
   const [locationMessage, setLocationMessage] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordMessage, setPasswordMessage] = useState("");
+  const [passwordLoading, setPasswordLoading] = useState(false);
 
   const resetForm = () => {
     setFullName(user.fullName);
@@ -96,6 +101,23 @@ export function ProfileDetails({ user }: ProfileDetailsProps) {
     }
   };
 
+  const handlePasswordChange = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setPasswordLoading(true);
+    setPasswordMessage("");
+    try {
+      await changePassword({ currentPassword, password: newPassword, confirmPassword });
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setPasswordMessage("Your password has been updated.");
+    } catch (error) {
+      setPasswordMessage(error instanceof Error ? error.message : "We could not update your password.");
+    } finally {
+      setPasswordLoading(false);
+    }
+  };
+
   return (
     <div className="profile-details">
       <div className="profile-details-header">
@@ -139,6 +161,34 @@ export function ProfileDetails({ user }: ProfileDetailsProps) {
           <div><dt><LocateFixed size={17} /> Timezone</dt><dd>{user.timezone}</dd></div>
         </dl>
       )}
+
+      <form onSubmit={handlePasswordChange} className="profile-password-form">
+        <div>
+          <span className="eyebrow">Security</span>
+          <h3><KeyRound size={18} /> Change password</h3>
+          <p>Use at least 8 characters and keep your password unique.</p>
+        </div>
+        <div className="profile-password-fields">
+          <label>Current password<input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" required /></label>
+          <label>New password<input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></label>
+          <label>Confirm new password<input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></label>
+        </div>
+        <div className="profile-password-actions">
+          <button type="submit" className="button-save" disabled={passwordLoading}>
+            {passwordLoading ? "Updating..." : "Update password"}
+          </button>
+        </div>
+
+        {passwordMessage && (
+          <div
+            className={`form-message ${passwordMessage.includes("updated") ? "form-message--success" : "form-message--error"
+              }`}
+            aria-live="polite"
+          >
+            {passwordMessage}
+          </div>
+        )}
+      </form>
     </div>
   );
 }

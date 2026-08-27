@@ -8,10 +8,11 @@ import { logIn, logOut, signUp, type AuthActionState } from "./actions/auth";
 import { toggleWishlist, type WishlistActionState } from "./actions/wishlist";
 import type { DestinationData } from "./lib/data";
 import React, { useMemo, useRef, useDeferredValue } from "react";
-import { City, Country } from "country-state-city";
 import { Check, ChevronDown, MapPin, Search } from "lucide-react";
 import { SwipeableImageCarousel } from "./swipeable-image-carousel";
 import { startTransition, useOptimistic } from "react";
+import { createEnquiry, type EnquiryActionState } from "./actions/enquiries"
+import { PhoneNumberInput } from "./PhoneNumberInput";
 
 export function Logo({ compact = false }: { compact?: boolean }) {
   return (
@@ -448,457 +449,141 @@ interface TripRequestFormProps {
   destinationsList?: string[];
 }
 
-type CityOptions = {
-  initialCities: string[];
-  allCities: string[];
-};
+// Module-level so every mount of this component (and every time the
+// dropdown is reopened) shares the same in-flight/completed request
+// instead of re-fetching. This is intentionally simple — no chunking, no
+// idle-callback scheduling — because the expensive part (iterating and
+// sorting ~150k raw city records) now happens once server-side in
+// app/api/cities/route.ts, which is itself cached for a week. The client
+// is just fetching and JSON-parsing an already-sorted array.
+let majorCitiesRequest: Promise<string[]> | null = null;
+let allCitiesRequest: Promise<string[]> | null = null;
 
-type CityBuildResult = {
-  options: CityOptions;
-  cancelled: boolean;
-};
+function fetchCities(scope: "major" | "all"): Promise<string[]> {
+  const existing = scope === "major" ? majorCitiesRequest : allCitiesRequest;
+  if (existing) return existing;
 
-/*
- * Cache the expensive global city dataset.
- *
- * The important difference from the old implementation is that
- * the city database is prepared progressively instead of doing
- * everything inside one blocking render/effect.
- */
-const cityOptionsCache = new Map<string, CityOptions>();
-
-let countryMapCache: Map<string, string> | null = null;
-let rawCitiesCache: ReturnType<typeof City.getAllCities> | null = null;
-
-function getCountryMap() {
-  if (countryMapCache) {
-    return countryMapCache;
-  }
-
-  const map = new Map<string, string>();
-
-  for (const country of Country.getAllCountries()) {
-    map.set(country.isoCode, country.name);
-  }
-
-  countryMapCache = map;
-
-  return map;
-}
-
-function getRawCities() {
-  if (rawCitiesCache) {
-    return rawCitiesCache;
-  }
-
-  rawCitiesCache = City.getAllCities();
-
-  return rawCitiesCache;
-}
-
-function normalizeCityName(name: string) {
-  return name.replace(/^['‘'"`’\s\d.-]+/, "").trim();
-}
-
-function sortCities(cities: string[]) {
-  return cities.sort((a, b) =>
-    a.localeCompare(b, "en", {
-      sensitivity: "base",
-      ignorePunctuation: true,
-    }),
-  );
-}
-
-/**
- * Build the city database progressively.
- *
- * The previous implementation processed and sorted the entire
- * global city database in one synchronous operation.
- *
- * This implementation processes small chunks and yields back
- * to the browser after every chunk.
- */
-function buildCityOptionsAsync(
-  destinationsList: string[],
-  onProgress: (options: CityOptions) => void,
-  onComplete: (options: CityOptions) => void,
-): () => void {
-  const countryMap = getCountryMap();
-  const cities = getRawCities();
-
-  const majorCities: string[] = [];
-  const allCities: string[] = [];
-
-  const destinationSet = new Set(destinationsList);
-
-  let index = 0;
-  let cancelled = false;
-
-  const CHUNK_SIZE = 500;
-
-  const processChunk = () => {
-    if (cancelled) {
-      return;
-    }
-
-    const end = Math.min(index + CHUNK_SIZE, cities.length);
-
-    for (; index < end; index++) {
-      const city = cities[index];
-
-      const cleanName = normalizeCityName(city.name);
-
-      if (
-        !cleanName ||
-        cleanName.length < 2 ||
-        /^\d+$/.test(cleanName)
-      ) {
-        continue;
-      }
-
-      const countryName =
-        countryMap.get(city.countryCode) || city.countryCode;
-
-      const formattedName = `${cleanName}, ${countryName}`;
-
-      allCities.push(formattedName);
-
-      /*
-       * country-state-city does not consistently expose
-       * population information in every version.
-       *
-       * When population exists, use it.
-       * Otherwise retain reasonably useful cities based
-       * on the existing fallback rule.
-       */
-      const rawCity = city as unknown as Record<string, unknown>;
-
-      const population = Number(rawCity.population) || 0;
-
-      if (
-        population > 300000 ||
-        (!population && cleanName.length >= 4)
-      ) {
-        majorCities.push(formattedName);
-      }
-    }
-
-    /*
-     * Give React/browser control back before processing
-     * the next chunk.
-     */
-    if (index < cities.length) {
-      scheduleIdle(processChunk);
-      return;
-    }
-
-    /*
-     * Deduplicate before sorting.
-     */
-    const uniqueMajorCities = Array.from(
-      new Set([...destinationsList, ...majorCities]),
-    );
-
-    const uniqueAllCities = Array.from(
-      new Set([...destinationsList, ...allCities]),
-    );
-
-    /*
-     * Sorting can itself be expensive, so don't run both
-     * sorts in the same browser task.
-     */
-    scheduleIdle(() => {
-      if (cancelled) {
-        return;
-      }
-
-      sortCities(uniqueMajorCities);
-
-      /*
-       * Make the useful initial result available immediately.
-       */
-      const initialOptions: CityOptions = {
-        initialCities: uniqueMajorCities,
-        allCities: [],
-      };
-
-      onProgress(initialOptions);
-
-      scheduleIdle(() => {
-        if (cancelled) {
-          return;
-        }
-
-        sortCities(uniqueAllCities);
-
-        const finalOptions: CityOptions = {
-          initialCities: uniqueMajorCities,
-          allCities: uniqueAllCities,
-        };
-
-        onComplete(finalOptions);
-      });
+  const request = fetch(`/api/cities?scope=${scope}`)
+    .then((response) => {
+      if (!response.ok) throw new Error(`City list request failed (${response.status})`);
+      return response.json() as Promise<string[]>;
+    })
+    .catch((error) => {
+      console.error("Failed to load city list:", error);
+      return [];
     });
-  };
 
-  const scheduleIdle = (callback: () => void) => {
-    const idleWindow = window as Window & {
-      requestIdleCallback?: (
-        callback: () => void,
-        options?: { timeout: number },
-      ) => number;
-    };
+  if (scope === "major") {
+    majorCitiesRequest = request;
+  } else {
+    allCitiesRequest = request;
+  }
 
-    if (idleWindow.requestIdleCallback) {
-      idleWindow.requestIdleCallback(callback, {
-        timeout: 300,
-      });
-    } else {
-      window.setTimeout(callback, 0);
-    }
-  };
-
-  scheduleIdle(processChunk);
-
-  return () => {
-    cancelled = true;
-  };
+  return request;
 }
+
+const initialEnquiryState: EnquiryActionState = { ok: false, message: "" };
 
 export function TripRequestForm({
   initialDestination = "",
   destinationsList = [],
 }: TripRequestFormProps) {
-  const [cityOptions, setCityOptions] =
-    useState<CityOptions | null>(null);
+  const [state, formAction, pending] = useActionState(createEnquiry, initialEnquiryState);
 
-  const [selectedDestinations, setSelectedDestinations] =
-    useState<string[]>(
-      initialDestination ? [initialDestination] : [],
-    );
+  const [majorCities, setMajorCities] = useState<string[] | null>(null);
+  const [allCities, setAllCities] = useState<string[] | null>(null);
+
+  const [selectedDestinations, setSelectedDestinations] = useState<string[]>(
+    initialDestination ? [initialDestination] : []
+  );
 
   const [searchQuery, setSearchQuery] = useState("");
-
-  const [isDropdownOpen, setIsDropdownOpen] =
-    useState(false);
-
-  const [isSubmitting, setIsSubmitting] =
-    useState(false);
-
-  const [statusMessage, setStatusMessage] =
-    useState<string | null>(null);
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  /*
-   * Don't make expensive filtering block typing.
-   */
-  const deferredSearchQuery =
-    useDeferredValue(searchQuery);
+  // Don't make filtering-as-you-type block keystrokes.
+  const deferredSearchQuery = useDeferredValue(searchQuery);
 
-  /*
-   * Stable cache key.
-   */
-  const cacheKey = useMemo(
-    () => destinationsList.join("\u0000"),
-    [destinationsList],
-  );
-
-  /*
-   * Load cities only when the dropdown is actually opened.
-   */
+  // Fetch the small "major cities" list the first time the dropdown opens.
   useEffect(() => {
-    if (!isDropdownOpen) {
-      return;
-    }
-
-    const cachedOptions =
-      cityOptionsCache.get(cacheKey);
-
-    if (cachedOptions) {
-      setCityOptions(cachedOptions);
-      return;
-    }
+    if (!isDropdownOpen || majorCities !== null) return;
 
     let cancelled = false;
-
-    const cancelBuild = buildCityOptionsAsync(
-      destinationsList,
-
-      /*
-       * Progressive result:
-       * major cities become available first.
-       */
-      (options) => {
-        if (cancelled) {
-          return;
-        }
-
-        setCityOptions((current) => {
-          /*
-           * Don't replace a completed dataset with
-           * a partial dataset.
-           */
-          if (
-            current &&
-            current.allCities.length > 0
-          ) {
-            return current;
-          }
-
-          return options;
-        });
-      },
-
-      /*
-       * Final result:
-       * complete global city list.
-       */
-      (options) => {
-        if (cancelled) {
-          return;
-        }
-
-        cityOptionsCache.set(cacheKey, options);
-        setCityOptions(options);
-      },
-    );
+    fetchCities("major").then((cities) => {
+      if (!cancelled) setMajorCities(cities);
+    });
 
     return () => {
       cancelled = true;
-      cancelBuild();
     };
-  }, [
-    isDropdownOpen,
-    cacheKey,
-    destinationsList,
-  ]);
+  }, [isDropdownOpen, majorCities]);
 
-  /*
-   * Close dropdown on outside click.
-   */
+  // Only fetch the full global list once the user actually searches —
+  // it's a bigger payload, no reason to pull it down for people who never
+  // type anything.
+  useEffect(() => {
+    if (!deferredSearchQuery.trim() || allCities !== null) return;
+
+    let cancelled = false;
+    fetchCities("all").then((cities) => {
+      if (!cancelled) setAllCities(cities);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [deferredSearchQuery, allCities]);
+
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
-      if (
-        dropdownRef.current &&
-        !dropdownRef.current.contains(
-          event.target as Node,
-        )
-      ) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setIsDropdownOpen(false);
       }
     }
 
-    document.addEventListener(
-      "mousedown",
-      handleClickOutside,
-    );
-
-    return () => {
-      document.removeEventListener(
-        "mousedown",
-        handleClickOutside,
-      );
-    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  /*
-   * Filter only the data that is currently available.
-   *
-   * IMPORTANT:
-   * We no longer put `initialCities` and `allCities`
-   * into the dependency array because those variables
-   * don't exist in this scope.
-   */
   const filteredDestinations = useMemo(() => {
-    const initialCities =
-      cityOptions?.initialCities ??
-      destinationsList;
+    const query = deferredSearchQuery.trim().toLowerCase();
 
-    const allCities =
-      cityOptions?.allCities ??
-      destinationsList;
-
-    const query =
-      deferredSearchQuery.trim().toLowerCase();
-
-    /*
-     * No search:
-     * only display a small number of cities.
-     */
     if (!query) {
-      return initialCities.slice(0, 80);
+      const base = majorCities ?? [];
+      return Array.from(new Set([...destinationsList, ...base])).slice(0, 80);
     }
 
-    /*
-     * Search:
-     * use the complete city database once it has loaded.
-     */
-    return allCities
-      .filter((destination) =>
-        destination
-          .toLowerCase()
-          .includes(query),
-      )
+    const source = allCities ?? majorCities ?? [];
+    return Array.from(new Set([...destinationsList, ...source]))
+      .filter((destination) => destination.toLowerCase().includes(query))
       .slice(0, 80);
-  }, [
-    deferredSearchQuery,
-    cityOptions,
-    destinationsList,
-  ]);
+  }, [deferredSearchQuery, majorCities, allCities, destinationsList]);
+
+  const isLoadingCities = isDropdownOpen && majorCities === null;
+  const isLoadingSearch = deferredSearchQuery.trim().length > 0 && allCities === null;
 
   const toggleDestination = (destination: string) => {
-    setSelectedDestinations((current) => {
-      if (current.includes(destination)) {
-        return current.filter(
-          (item) => item !== destination,
-        );
-      }
-
-      return [...current, destination];
-    });
+    setSelectedDestinations((current) =>
+      current.includes(destination)
+        ? current.filter((item) => item !== destination)
+        : [...current, destination]
+    );
   };
 
   const removeDestination = (destination: string) => {
-    setSelectedDestinations((current) =>
-      current.filter(
-        (item) => item !== destination,
-      ),
-    );
-  };
-
-  const handleSubmit = async (
-    e: React.FormEvent<HTMLFormElement>,
-  ) => {
-    e.preventDefault();
-
-    setIsSubmitting(true);
-    setStatusMessage(null);
-
-    await new Promise((resolve) =>
-      setTimeout(resolve, 800),
-    );
-
-    setIsSubmitting(false);
-
-    setStatusMessage(
-      "Thank you! A Travel Beats expert will be in touch with you shortly.",
-    );
+    setSelectedDestinations((current) => current.filter((item) => item !== destination));
   };
 
   return (
     <div className="bg-white rounded-3xl p-6 md:p-8 shadow-xl shadow-slate-200/50 border border-slate-100">
-      <form
-        onSubmit={handleSubmit}
-        className="space-y-5"
-      >
+      <form action={formAction} className="space-y-5">
         {/* Name & Email Row */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-xs font-bold uppercase tracking-wider text-slate-800 mb-1.5">
               Full Name
             </label>
-
             <input
               type="text"
               name="fullName"
@@ -912,7 +597,6 @@ export function TripRequestForm({
             <label className="block text-xs font-bold uppercase tracking-wider text-slate-800 mb-1.5">
               Email
             </label>
-
             <input
               type="email"
               name="email"
@@ -925,34 +609,16 @@ export function TripRequestForm({
 
         {/* Phone & Destinations Multi-Select Row */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-slate-800 mb-1.5">
-              Phone
-            </label>
-
-            <input
-              type="tel"
-              name="phone"
-              placeholder="+91 "
-              className="w-full px-4 py-3 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-900 focus:outline-none focus:border-[#0a1f4d] focus:bg-white transition-all"
-            />
-          </div>
+          <PhoneNumberInput name="phone" label="Phone" />
 
           {/* Global Multi-Select Dropdown Field */}
-          <div
-            className="relative"
-            ref={dropdownRef}
-          >
+          <div className="relative" ref={dropdownRef}>
             <label className="block text-xs font-bold uppercase tracking-wider text-slate-800 mb-1.5">
               Destinations (Select multiple)
             </label>
 
             <div
-              onClick={() =>
-                setIsDropdownOpen(
-                  (current) => !current,
-                )
-              }
+              onClick={() => setIsDropdownOpen((current) => !current)}
               className="w-full min-h-11.5 p-2 px-3 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer flex flex-wrap items-center gap-1.5 pr-8 relative transition-all focus-within:border-[#0a1f4d] focus-within:bg-white"
             >
               {selectedDestinations.length === 0 && (
@@ -961,58 +627,41 @@ export function TripRequestForm({
                 </span>
               )}
 
-              {selectedDestinations.map(
-                (destination) => (
-                  <span
-                    key={destination}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#0a1f4d] text-white"
+              {selectedDestinations.map((destination) => (
+                <span
+                  key={destination}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#0a1f4d] text-white"
+                >
+                  {destination}
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      removeDestination(destination);
+                    }}
+                    className="hover:text-amber-300 transition-colors ml-0.5"
                   >
-                    {destination}
-
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-
-                        removeDestination(
-                          destination,
-                        );
-                      }}
-                      className="hover:text-amber-300 transition-colors ml-0.5"
-                    >
-                      <X size={12} />
-                    </button>
-                  </span>
-                ),
-              )}
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
 
               <ChevronDown
                 size={16}
                 className={`absolute right-3 top-3.5 text-slate-400 transition-transform ${
-                  isDropdownOpen
-                    ? "rotate-180"
-                    : ""
+                  isDropdownOpen ? "rotate-180" : ""
                 }`}
               />
             </div>
 
-            {/* Dropdown Menu */}
             {isDropdownOpen && (
               <div className="absolute left-0 right-0 top-full mt-2 bg-white border border-slate-200 rounded-2xl shadow-2xl z-50 overflow-hidden flex flex-col">
                 <div className="p-2 border-b border-slate-100 flex items-center gap-2 bg-slate-50">
-                  <Search
-                    size={14}
-                    className="text-slate-400 ml-2"
-                  />
-
+                  <Search size={14} className="text-slate-400 ml-2" />
                   <input
                     type="text"
                     value={searchQuery}
-                    onChange={(event) =>
-                      setSearchQuery(
-                        event.target.value,
-                      )
-                    }
+                    onChange={(event) => setSearchQuery(event.target.value)}
                     placeholder="Search any city or country..."
                     className="w-full bg-transparent text-sm text-slate-800 placeholder-slate-400 focus:outline-none"
                     autoFocus
@@ -1020,27 +669,22 @@ export function TripRequestForm({
                 </div>
 
                 <div className="overflow-y-auto max-h-56 p-1">
-                  {filteredDestinations.length ===
-                  0 ? (
+                  {isLoadingCities ? (
+                    <div className="p-4 text-xs text-slate-400 text-center">
+                      Loading destinations...
+                    </div>
+                  ) : filteredDestinations.length === 0 ? (
                     <div className="p-4 text-xs text-slate-400 text-center">
                       No matching global cities found.
                     </div>
                   ) : (
-                    filteredDestinations.map(
-                      (destination) => {
-                        const isSelected =
-                          selectedDestinations.includes(
-                            destination,
-                          );
-
+                    <>
+                      {filteredDestinations.map((destination) => {
+                        const isSelected = selectedDestinations.includes(destination);
                         return (
                           <div
                             key={destination}
-                            onClick={() =>
-                              toggleDestination(
-                                destination,
-                              )
-                            }
+                            onClick={() => toggleDestination(destination)}
                             className={`flex items-center justify-between px-3 py-2 text-xs rounded-xl cursor-pointer transition-colors ${
                               isSelected
                                 ? "bg-slate-100 font-semibold text-[#0a1f4d]"
@@ -1048,24 +692,19 @@ export function TripRequestForm({
                             }`}
                           >
                             <span className="flex items-center gap-2">
-                              <MapPin
-                                size={12}
-                                className="text-slate-400"
-                              />
-
+                              <MapPin size={12} className="text-slate-400" />
                               {destination}
                             </span>
-
-                            {isSelected && (
-                              <Check
-                                size={14}
-                                className="text-[#0a1f4d]"
-                              />
-                            )}
+                            {isSelected && <Check size={14} className="text-[#0a1f4d]" />}
                           </div>
                         );
-                      },
-                    )
+                      })}
+                      {isLoadingSearch && (
+                        <div className="p-2 text-[11px] text-slate-400 text-center">
+                          Searching more destinations...
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
@@ -1079,7 +718,6 @@ export function TripRequestForm({
             <label className="block text-xs font-bold uppercase tracking-wider text-slate-800 mb-1.5">
               Travel Start
             </label>
-
             <input
               type="date"
               name="travelStart"
@@ -1091,7 +729,6 @@ export function TripRequestForm({
             <label className="block text-xs font-bold uppercase tracking-wider text-slate-800 mb-1.5">
               Travel End
             </label>
-
             <input
               type="date"
               name="travelEnd"
@@ -1103,7 +740,6 @@ export function TripRequestForm({
             <label className="block text-xs font-bold uppercase tracking-wider text-slate-800 mb-1.5">
               Adults
             </label>
-
             <input
               type="number"
               min={1}
@@ -1117,7 +753,6 @@ export function TripRequestForm({
             <label className="block text-xs font-bold uppercase tracking-wider text-slate-800 mb-1.5">
               Children
             </label>
-
             <input
               type="number"
               min={0}
@@ -1133,7 +768,6 @@ export function TripRequestForm({
           <label className="block text-xs font-bold uppercase tracking-wider text-slate-800 mb-1.5">
             Tell us about the journey
           </label>
-
           <textarea
             name="message"
             rows={4}
@@ -1142,21 +776,36 @@ export function TripRequestForm({
           />
         </div>
 
-        {statusMessage && (
-          <div className="p-3 rounded-xl text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
-            {statusMessage}
+        {/*
+         * The enquiry schema (actions/enquiry.ts) takes a single
+         * `destination` string, but this UI lets someone pick several. We
+         * join them into one readable string — the server does a
+         * best-effort match against a single destination's slug/name, so
+         * a multi-destination pick will usually fall through to a
+         * CUSTOM_TRIP enquiry rather than linking to one Destination row.
+         * The full text is still preserved and visible to your team either
+         * way, via contactSnapshot/tripDetails and the email itself.
+         */}
+        <input type="hidden" name="destination" value={selectedDestinations.join(", ")} />
+
+        {state.message && (
+          <div
+            className={`p-3 rounded-xl text-xs font-medium border ${
+              state.ok
+                ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                : "bg-rose-50 text-rose-800 border-rose-200"
+            }`}
+          >
+            {state.message}
           </div>
         )}
 
-        {/* Submit Button */}
         <button
           type="submit"
-          disabled={isSubmitting}
+          disabled={pending}
           className="w-full md:w-auto px-8 py-3.5 bg-[#0a1f4d] text-white hover:bg-[#102a6b] transition-all rounded-full font-semibold text-sm shadow-md cursor-pointer disabled:opacity-50"
         >
-          {isSubmitting
-            ? "Sending..."
-            : "Send enquiry →"}
+          {pending ? "Sending..." : "Send enquiry →"}
         </button>
       </form>
     </div>
@@ -1242,6 +891,9 @@ export function AuthForms({ mode }: { mode: "signin" | "signup" }) {
                     placeholder="••••••••"
                   />
                 </label>
+                <Link className="auth-forgot-link" href="/auth/forgot-password">
+                  Forgot your password?
+                </Link>
               </div>
 
               <button

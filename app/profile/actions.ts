@@ -1,8 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { z } from "zod";
-import { getCurrentUser } from "../lib/auth";
+import { z, ZodError } from "zod";
+import { getCurrentUser, hashPassword, hasUsablePassword, verifyPassword } from "../lib/auth";
 import { getPrisma } from "../lib/db";
 
 const profileSchema = z.object({
@@ -16,6 +16,15 @@ const profileSchema = z.object({
 });
 
 export type ProfileUpdate = z.infer<typeof profileSchema>;
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(128),
+  password: z.string().min(8).max(128),
+  confirmPassword: z.string().min(8).max(128),
+}).refine((values) => values.password === values.confirmPassword, {
+  path: ["confirmPassword"],
+  message: "New passwords do not match.",
+});
 
 export async function updateProfile(data: ProfileUpdate) {
   const user = await getCurrentUser();
@@ -39,4 +48,35 @@ export async function updateProfile(data: ProfileUpdate) {
   revalidatePath("/");
   revalidatePath("/profile");
   return { success: true };
+}
+
+export async function changePassword(data: z.infer<typeof changePasswordSchema>) {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) throw new Error("Unauthorized");
+
+  try {
+    const values = changePasswordSchema.parse(data);
+
+    const user = await getPrisma().user.findUnique({
+      where: { id: sessionUser.id },
+      select: { passwordHash: true },
+    });
+
+    if (!hasUsablePassword(user?.passwordHash) || !(await verifyPassword(values.currentPassword, user.passwordHash))) {
+      throw new Error("Your current password is incorrect.");
+    }
+
+    await getPrisma().user.update({
+      where: { id: sessionUser.id },
+      data: { passwordHash: await hashPassword(values.password) },
+    });
+
+    return { success: true };
+  } catch (error) {
+    if (error instanceof ZodError) {
+      // Extract the first clean error message (e.g. "New passwords do not match.")
+      throw new Error(error.issues[0]?.message || "Invalid input data.");
+    }
+    throw error;
+  }
 }

@@ -1,8 +1,10 @@
 "use server";
 
 import { z } from "zod";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { redirect } from "next/navigation";
+import { after } from "next/server";
+import { Resend } from "resend";
 import {
   clearSession,
   createSession,
@@ -24,6 +26,37 @@ const loginSchema = z.object({
   email: z.string().trim().email().max(180),
   password: z.string().min(1).max(128),
 });
+
+const passwordSchema = z.object({
+  password: z.string().min(8).max(128),
+  confirmPassword: z.string().min(8).max(128),
+}).refine((values) => values.password === values.confirmPassword, {
+  message: "Passwords do not match.",
+  path: ["confirmPassword"],
+});
+
+const passwordResetRequestSchema = z.object({
+  email: z.string().trim().email().max(180),
+});
+
+const passwordResetSchema = passwordSchema.extend({
+  token: z.string().min(32).max(256),
+});
+
+const PASSWORD_RESET_LIFETIME_MS = 1000 * 60 * 30;
+const PASSWORD_RESET_COOLDOWN_MS = 1000 * 60 * 2;
+const RESET_REQUEST_MESSAGE = "If an account exists for that email, we have sent a password reset link.";
+
+function hashResetToken(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function passwordResetUrl(token: string) {
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+  const url = new URL("/auth/reset-password", siteUrl);
+  url.searchParams.set("token", token);
+  return url.toString();
+}
 
 // A fixed, non-secret scrypt hash — never derived from a real password —
 // used as the comparison target when there's no usable password to check
@@ -59,14 +92,6 @@ export async function signUp(
     const prisma = getPrisma();
     const existing = await prisma.user.findUnique({ where: { email } });
 
-    // Previously checked `existing?.passwordHash` truthiness, which was
-    // always true for users created via actions/enquiry.ts (they got a
-    // real hashPassword() of a random UUID as a placeholder) — meaning
-    // anyone who'd ever submitted the enquiry form was permanently
-    // blocked from signing up with that email. hasUsablePassword()
-    // recognizes the enquiry-flow placeholder specifically and treats it
-    // the same as "no password set yet", so this now correctly falls
-    // through to the update-existing-row branch below instead.
     if (hasUsablePassword(existing?.passwordHash)) {
       return { ok: false, message: "An account already exists for this email." };
     }
@@ -109,9 +134,6 @@ export async function logIn(
 
     const usablePassword = hasUsablePassword(user?.passwordHash);
 
-    // Always run verifyPassword, whether or not there's a usable password
-    // to check against, so response timing can't distinguish "no account",
-    // "enquiry-only account with no password set", and "wrong password".
     const passwordValid = await verifyPassword(
       parsed.data.password,
       usablePassword ? user.passwordHash : DUMMY_PASSWORD_HASH
@@ -127,6 +149,151 @@ export async function logIn(
   }
 
   redirect("/");
+}
+
+/*
+ * ---------------------------------------------------------
+ * PASSWORD RESET EMAIL (runs AFTER the response is sent)
+ * ---------------------------------------------------------
+ * Previously this was awaited inline before requestPasswordReset()
+ * returned, meaning the user's form submission waited on Resend's API
+ * round trip. The response message is identical regardless of outcome
+ * (see RESET_REQUEST_MESSAGE) by design, so there's no correctness reason
+ * to make the request wait on it — same reasoning as the enquiry emails.
+ * If delivery fails or Resend isn't configured, the token is deleted here
+ * so an unreachable, unusable token isn't left sitting in the DB.
+ */
+async function sendPasswordResetEmail(
+  tokenId: string,
+  user: { email: string; fullName: string },
+  token: string
+) {
+  const prisma = getPrisma();
+
+  const resendApiKey = process.env.RESEND_API_KEY;
+  const fromEmail = process.env.RESEND_FROM_EMAIL;
+
+  if (!resendApiKey || !fromEmail) {
+    await prisma.passwordResetToken.delete({ where: { id: tokenId } }).catch(() => {});
+    return;
+  }
+
+  try {
+    const emailResult = await new Resend(resendApiKey).emails.send({
+      from: fromEmail,
+      to: user.email,
+      subject: "Reset your Travel Beats password",
+      html: `<p>Hello ${escapeHtml(user.fullName)},</p><p>Use the link below to set a new password. It expires in 30 minutes.</p><p><a href="${passwordResetUrl(token)}">Reset my password</a></p><p>If you did not request this, you can safely ignore this email.</p>`,
+    });
+
+    if (emailResult.error) {
+      throw new Error(emailResult.error.message || "Resend email delivery failed");
+    }
+  } catch {
+    await prisma.passwordResetToken.delete({ where: { id: tokenId } }).catch(() => {});
+  }
+}
+
+export async function requestPasswordReset(
+  _previous: AuthActionState,
+  formData: FormData
+): Promise<AuthActionState> {
+  const parsed = passwordResetRequestSchema.safeParse(Object.fromEntries(formData));
+  // Keep this response identical for invalid and unregistered addresses so
+  // the form cannot be used to discover customer accounts.
+  if (!parsed.success) return { ok: true, message: RESET_REQUEST_MESSAGE };
+
+  try {
+    const user = await getPrisma().user.findUnique({
+      where: { email: parsed.data.email.toLowerCase() },
+      select: { id: true, email: true, fullName: true, role: true },
+    });
+
+    if (!user || user.role === "admin") {
+      return { ok: true, message: RESET_REQUEST_MESSAGE };
+    }
+
+    const prisma = getPrisma();
+    const recentToken = await prisma.passwordResetToken.findFirst({
+      where: { userId: user.id, createdAt: { gt: new Date(Date.now() - PASSWORD_RESET_COOLDOWN_MS) } },
+      select: { id: true },
+    });
+
+    if (recentToken) return { ok: true, message: RESET_REQUEST_MESSAGE };
+
+    const token = randomBytes(32).toString("base64url");
+    const resetToken = await prisma.passwordResetToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: hashResetToken(token),
+        expiresAt: new Date(Date.now() + PASSWORD_RESET_LIFETIME_MS),
+      },
+    });
+
+    after(() =>
+      sendPasswordResetEmail(resetToken.id, { email: user.email, fullName: user.fullName }, token)
+    );
+  } catch {
+    // Deliberately return the same result. A reset request should never leak
+    // whether a customer record exists or whether mail delivery is configured.
+  }
+
+  return { ok: true, message: RESET_REQUEST_MESSAGE };
+}
+
+export async function resetPassword(
+  _previous: AuthActionState,
+  formData: FormData
+): Promise<AuthActionState> {
+  const parsed = passwordResetSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) {
+    return { ok: false, message: parsed.error.issues[0]?.message || "Use a password of at least 8 characters." };
+  }
+
+  try {
+    const prisma = getPrisma();
+    const tokenHash = hashResetToken(parsed.data.token);
+    const resetToken = await prisma.passwordResetToken.findUnique({
+      where: { tokenHash },
+      select: { id: true, userId: true, expiresAt: true, usedAt: true },
+    });
+
+    if (!resetToken || resetToken.usedAt || resetToken.expiresAt <= new Date()) {
+      return { ok: false, message: "This reset link is invalid or has expired. Request a new one." };
+    }
+
+    const passwordHash = await hashPassword(parsed.data.password);
+    try {
+      await prisma.$transaction(async (transaction) => {
+        const consumed = await transaction.passwordResetToken.updateMany({
+          where: { id: resetToken.id, usedAt: null, expiresAt: { gt: new Date() } },
+          data: { usedAt: new Date() },
+        });
+        if (consumed.count !== 1) throw new Error("RESET_TOKEN_UNAVAILABLE");
+
+        await transaction.user.update({ where: { id: resetToken.userId }, data: { passwordHash } });
+        await transaction.passwordResetToken.deleteMany({
+          where: { userId: resetToken.userId, id: { not: resetToken.id } },
+        });
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "RESET_TOKEN_UNAVAILABLE") {
+        return { ok: false, message: "This reset link is invalid or has expired. Request a new one." };
+      }
+      throw error;
+    }
+    await createSession(resetToken.userId);
+  } catch {
+    return { ok: false, message: "We could not reset your password. Please request a new link." };
+  }
+
+  redirect("/profile");
+}
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>'"]/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
+  })[character] ?? character);
 }
 
 export async function adminLogIn(
@@ -176,9 +343,6 @@ export async function adminLogIn(
     const adminUser = await prisma.user.findUnique({ where: { email } });
     const usablePassword = hasUsablePassword(adminUser?.passwordHash);
 
-    // Same constant-time reasoning as logIn(): run verifyPassword either
-    // way so a nonexistent admin email and a wrong password for a real
-    // admin email take the same amount of time to reject.
     const passwordValid = await verifyPassword(
       password,
       usablePassword ? adminUser.passwordHash : DUMMY_PASSWORD_HASH
@@ -190,7 +354,6 @@ export async function adminLogIn(
 
     await createSession(adminUser.id);
   } catch (error) {
-    // Rethrow Next.js redirect errors so navigation succeeds
     if (error instanceof Error && error.message.includes("NEXT_REDIRECT")) {
       throw error;
     }
